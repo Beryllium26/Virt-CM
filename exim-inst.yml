@@ -1,0 +1,64 @@
+---
+# this playbook  installs exim (pre-made deb on lb typically and deb-exim4 on prod)
+# requires clamav, dkim key
+
+- hosts: eximsrc
+  remote_user: ansyman
+  sudo: yes
+  vars:
+    exsrcver: 4.88-{{ansible_distribution_major_version}}-1
+    eximdeb: exim-lsm_{{exsrcver}}_amd64.deb
+  tasks:
+    - user: name=exim system=yes uid=42 createhome=no shell=/bin/false
+    - apt: name=libdb5.3 state=present
+    - apt: name=libpam0g state=latest
+    - apt: name=libpcre3 state=latest
+    - copy: src=files/{{eximdeb}} dest=/tmp
+      when: ansible_machine == 'x86_64'
+    - apt: deb=/tmp/{{eximdeb}}
+      when: ansible_machine == 'x86_64'
+    - template: src=files/exim.configure.tmpl dest=/usr/local/exim/configure
+    - file: path=/var/spool/exim state=directory owner=exim group=exim mode=0750
+    - stat: path=/usr/local/exim/certs
+      register: eximcerts
+    - file: path=/usr/local/exim/certs state=directory mode=2755 owner=root
+      when: eximcerts.stat.isdir is not defined
+    - file: path=/usr/local/exim/local state=directory mode=0755 owner=root
+    - copy: src=./files/exim/{{domain}} dest=/usr/local/exim/local/{{domain}} 
+    - shell: openssl req -x509 -nodes -days 1460 -subj '/C=GB/ST=London/L=London/CN=mta.{{domain}}' -newkey rsa:2048 -keyout exim.key -out exim.pem
+      args:
+        chdir: /usr/local/exim/certs
+    - file: mode=0400 path=/usr/local/exim/certs/exim.key owner=exim
+    - file: mode=0444 path=/usr/local/exim/certs/exim.pem owner=exim
+    - copy: src=./files/exim/{{proj}}.dkim.public.key dest=/usr/local/exim/certs/dkim.public.key mode=0444 
+    - copy: src=./files/exim/{{proj}}.dkim.private.key dest=/usr/local/exim/certs/dkim.private.key mode=0440 owner=root group=exim
+    - apt: name=heirloom-mailx state=present
+    - command: rm -f /usr/sbin/sendmail
+    - file: src=/usr/local/exim/bin/exim dest=/usr/sbin/sendmail state=link
+    - file: src=/usr/local/exim/bin/exim dest=/usr/lib/sendmail state=link
+    - lineinfile: dest=/etc/rc.local insertbefore="^exit 0" line="/usr/local/exim/bin/exim -bd -q15m"
+    - copy: src=files/aliases dest=/etc/aliases owner=root mode=0644
+#    - lineinfile: dest=/etc/iptables.rules insertbefore="^-A INPUT -m limit --limit" line="-A INPUT -i eth0 -p tcp -m tcp --dport 25 -j ACCEPT"
+#    - shell: /sbin/iptables-restore  /etc/iptables.rules
+
+- hosts: eximdeb
+  remote_user: ansyman
+  sudo: yes
+  tasks:
+    - apt: name=heirloom-mailx state=present
+    - apt: name=exim4-daemon-light state=present
+    - apt: name=exim4-config state=present
+    - apt: name=exim4-base state=present
+    - template: src=exim4.conf.conf dest=/etc/exim4/update-exim4.conf.conf 
+    - shell: update-exim4.conf
+    - copy: src=files/aliases dest=/etc/aliases owner=root mode=0644
+    - shell: service exim4 restart
+
+- hosts: eximrelays
+  remote_user: ansyman
+  sudo: yes
+  tasks:
+    - lineinfile: dest=/etc/iptables.rules insertbefore="^-A INPUT -m limit --limit" line="-A INPUT -s {{new_vm_ip}} -i eth0 -p tcp -m multiport --dports 25,1025 -j ACCEPT"
+    - shell: /sbin/iptables-restore /etc/iptables.rules
+    - lineinfile: dest=/usr/local/exim/configure insertbefore="^iface eth0 inet6 static" line="    pre-up iptables-restore < /etc/iptables.rules"
+

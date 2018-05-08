@@ -1,0 +1,151 @@
+---
+# this playbook deploys initial components
+
+- hosts: clusterVMs
+  vars:
+     ansible_ssh_user: root
+     ansible_ssh_private_key_file: "~/.ssh/ansible-key"
+
+  pre_tasks:
+   - name: install sudo
+     apt: name=sudo state=present 
+   - apt: name=less state=present
+   - apt: name=dnsutils state=present
+   - apt: name=openssl state=present
+   - apt: name=fail2ban state=present
+   - apt: name=rsync state=present
+   - apt: name=telnet state=present
+   - apt: name=lsof state=present
+   - apt: name=libpam-cracklib state=present
+   - stat: path=/var/tmp/swap
+     register: sw
+   - shell: /bin/dd if=/dev/zero of=/var/tmp/swap bs=1024 count=2520531
+     args:
+       creates: /var/tmp/swap
+     when: not sw.stat.exists 
+   - lineinfile: dest=/etc/fstab line="/var/tmp/swap           none    swap    sw      0       0"
+     when: not sw.stat.exists
+   - shell: grep swap /proc/swaps > /var/tmp/procswap
+     ignore_errors: True
+   - shell: file /var/tmp/procswap
+     register: swap_res
+     ignore_errors: True
+   - shell: /sbin/mkswap swap
+     args:
+       chdir: /var/tmp/
+     when: "'empty' in swap_res.stdout"
+   - shell: /sbin/swapon /var/tmp/swap
+     when: "'empty' in swap_res.stdout"
+   - copy: src=jail.local.{{ansible_distribution_major_version}} dest=/etc/fail2ban/jail.local owner=root mode=0644
+   - command: /etc/init.d/fail2ban restart
+   - sysctl: name=net.ipv6.conf.default.disable_ipv6 value=1 sysctl_file=/etc/sysctl.conf
+   - sysctl: name=net.ipv6.conf.lo.disable_ipv6 value=1 sysctl_file=/etc/sysctl.conf
+   - sysctl: name=net.ipv6.conf.all.disable_ipv6 value=1 sysctl_file=/etc/sysctl.conf reload=yes
+   - command: /sbin/sysctl -p
+   - copy: src=iptables.rules dest=/etc/iptables.rules owner=root mode=0640
+   - lineinfile: dest=/etc/network/interfaces insertbefore="^iface eth0 inet6 static" line="    pre-up iptables-restore < /etc/iptables.rules"
+   - shell: /sbin/iptables-restore /etc/iptables.rules
+   - user: name=exim system=yes uid=42 createhome=no shell=/bin/false
+   - copy: src=sudoers dest=/etc/sudoers owner=root mode=0440
+   - shell: /usr/sbin/visudo -c
+   - copy: src=files/rc.local dest=/etc/rc.local mode=0755
+   - shell: systemctl start rc-local
+     when: ansible_distribution_major_version >= '9'
+   - copy: src=files/vimrc.local dest=/etc/vim/vimrc.local
+     when: ansible_distribution_major_version >= '9'
+     
+   
+  roles:
+    - techtobase
+    - f500.vim
+
+- hosts: nagiosnrpe
+  vars:
+     ansible_ssh_user: root
+     ansible_ssh_private_key_file: "~/.ssh/ansible-key"
+
+  tasks:
+   - apt: name=nagios-nrpe-server state=present
+   - apt: name=nagios-plugins state=present
+   - lineinfile: dest=/etc/nagios/nrpe.cfg regexp='^allowed_hosts=' line="allowed_hosts={{nagiosserver}}"
+   - lineinfile: dest=/etc/iptables.rules insertbefore="^-A INPUT -m limit --limit" line="-A INPUT -s {{nagiosserver}} -i eth0 -p tcp -m tcp --dport 5666 -j ACCEPT"
+   - shell: /sbin/iptables-restore /etc/iptables.rules
+
+
+- hosts: tomcat
+  vars:
+     ansible_ssh_user: root
+     ansible_ssh_private_key_file: "~/.ssh/ansible-key"
+  tasks:
+    - command: /bin/mkdir -p /apps
+    - stat: path=/apps/{{tomcatrel}}
+      register: tc
+    - unarchive: src=files/{{tomcatrel}}.tar.gz dest=/apps
+      when: tc.stat.isdir is not defined
+    - file: src=/apps/{{tomcatrel}} dest=/apps/tomcat state=link
+    - file: path=/apps/tomcat/webapps/{{ item }} state=absent
+      with_items:
+        - {'docs', 'examples', 'host-manager', 'manager'}
+    - command: chown -R build:build /apps/{{tomcatrel}}
+    - template: src=setenv.sh dest=/apps/tomcat/bin/setenv.sh owner=root mode=0755
+    - lineinfile: dest=/etc/rc.local insertbefore="^exit 0" line="su - build -c /apps/tomcat/bin/startup.sh"
+    - file: path=/var/www/media state=directory mode=0755
+      when: varmedia is defined
+    - file: dest=/apps/{{tomcatrel}}/webapps/media src=/var/www/media state=link
+      when: varmedia is defined
+    - stat: path=/usr/lib/jvm/{{jdkrel}}
+      register: jdkr
+    - command: /bin/mkdir -p /usr/lib/jvm
+      when: jdkr.stat.isdir is not defined
+    - unarchive: src=files/{{jdksrc}} dest=/usr/lib/jvm
+      when: jdkr.stat.isdir is not defined and ansible_machine == 'x86_64'
+    - unarchive: src=files/{{jdki386}} dest=/usr/lib/jvm
+      when: ansible_machine == 'i686' 
+    - command: /bin/chown -R root:root /usr/lib/jvm/{{jdkrel}}
+    - file: src=/usr/lib/jvm/{{jdkrel}} dest=/usr/lib/jvm/java-oracle state=link
+    - shell: JHome=/usr/lib/jvm/java-oracle && /usr/bin/update-alternatives --install /usr/bin/java java ${JHome%*/}/bin/java 20000
+    - copy: src=./files/java8UnlimitedJCEPolicy/UnlimitedJCEPolicyJDK8/local_policy.jar dest=/usr/lib/jvm/java-oracle/jre/lib/security/ owner=root mode=0644 backup=yes
+    - copy: src=./files/java8UnlimitedJCEPolicy/UnlimitedJCEPolicyJDK8/US_export_policy.jar dest=/usr/lib/jvm/java-oracle/jre/lib/security/ owner=root mode=0644 backup=yes
+    - lineinfile: dest=/apps/tomcat/conf/server.xml insertafter='^    <Connector port="8080" protocol="HTTP/1.1"' line='               server="{{ proj }}"' state=present
+    - lineinfile: dest=/apps/tomcat/conf/server.xml insertafter='^    <Connector port="8080" protocol="HTTP/1.1"' line='               compression="on"' state=present
+
+
+- hosts: postgres
+  vars:
+     ansible_ssh_user: root
+     ansible_ssh_private_key_file: "~/.ssh/ansible-key"
+
+  tasks:
+    - apt_key: url=https://www.postgresql.org/media/keys/ACCC4CF8.asc validate_certs=no state=present
+    - template: src=postg.list dest=/etc/apt/sources.list.d/postg.list mode=0644 
+    - apt: update_cache=yes name=postgresql-{{pgver}} state=present
+    - apt: name=postgresql-client-{{pgver}} state=present
+    - apt: name=postgresql-contrib-{{pgver}} state=present
+    - apt: name=python3 state=present
+    - lineinfile: 'dest=/etc/sudoers state=present regexp="^ansyman ALL\=" line="damian  ALL = (root) NOPASSWD: /bin/systemctl restart postgresql@9.6-main" validate="visudo -cf %s"'
+
+- hosts: build
+  vars:
+     ansible_ssh_user: root
+     ansible_ssh_private_key_file: "~/.ssh/ansible-key"
+  tasks:
+   - apt: name=subversion state=present
+   - apt: name=mysql-server state=present
+   - apt: name=apache2 state=present
+   - apt: name=libapache2-svn state=present
+     when: ansible_distribution_major_version < '9'
+   - apt: name=libapache2-mod-svn state=present
+     when: ansible_distribution_major_version >= '9'
+   - shell: a2enmod dav
+   - shell: a2enmod dav
+   - shell: a2ensite default-ssl
+   - shell: a2enmod ssl
+   - file: path=/etc/apache2/ssl state=directory
+   - file: path=/build owner=build state=directory
+ 
+- hosts: demo
+  remote_user: ansyman
+  sudo: yes
+  tasks:
+    - shell: /sbin/iptables -t nat -A PREROUTING -i eth0 -p tcp -m tcp --dport 80 -j DNAT --to-destination {{ansible_eth0.ipv4.address}}:8080 
+    - shell: /sbin/iptables-save > /etc/iptables.rules

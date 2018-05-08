@@ -1,0 +1,17 @@
+---
+# this playbook installs maldet
+
+- hosts: techtovms
+  remote_user: ansyman
+  sudo: yes
+  tasks:
+    - apt: name=inotify-tools state=latest
+    - stat: path=/usr/local/maldetect/conf.maldet
+      register: opensslsrc
+    - copy: src=files/maldetect-current.tar.gz dest=/home/ansyman
+      when: not opensslsrc.stat.exists
+    - shell: cd /home/ansyman/ && tar -xzf ./maldetect-current.tar.gz && cd ./maldetect-1.5 && ./install.sh
+      when: not opensslsrc.stat.exists
+    - copy: src=/usr/local/maldetect/conf.maldet dest=/usr/local/maldetect/conf.maldet
+    - copy: src=./files/{{proj}}_monitor_paths dest=/usr/local/maldetect/monitor_paths
+    - replace: dest=/usr/local/maldetect/internals/functions regexp='pgrep -x -u root clamd' replace='pgrep -x -u clamav clamd'

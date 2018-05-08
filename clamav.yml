@@ -1,0 +1,13 @@
+---
+# this playbook installs clamav
+
+
+- hosts: techtovms
+  remote_user: ansyman
+  sudo: yes
+  tasks:
+    - apt: name=clamav update_cache=yes state=latest
+    - apt: name=clamav-daemon state=latest
+    - user: name=clamav groups=exim
+#    - lineinfile: dest=/etc/clamav/clamd.conf insertbefore="^ScanMail true" line="AllowSupplementaryGroups true"
+#    - shell: service clamav-daemon restart
