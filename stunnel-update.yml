@@ -1,11 +1,11 @@
 ---
 # updates haproxy/stunnel on prod/dr instances
 
-- hosts: fxe
+- hosts: {{proj_vms}}
   remote_user: ansyman
   sudo: yes
   vars:
-    stunnel_ldeb: stunnel-lsm_5.44-{{ansible_distribution_major_version}}-1_amd64.deb
+    stunnel_ldeb: stunnel-{{latest_pkg}}-{{ansible_distribution_major_version}}-1_amd64.deb
   tasks:
     - copy: src=files/{{stunnel_ldeb}} dest=/tmp
       when: ansible_machine == 'x86_64'
