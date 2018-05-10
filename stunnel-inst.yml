@@ -1,0 +1,21 @@
+---
+
+- hosts: fxe
+  remote_user: ansyman
+  sudo: yes
+  vars:
+    stunnel_ldeb: stunnel-lsm_5.41-{{ansible_distribution_major_version}}-1_amd64.deb
+  tasks:
+    - apt: name=zlib1g-dev state=present
+    - copy: src=files/{{stunnel_ldeb}} dest=/tmp
+      when: ansible_machine == 'x86_64'
+    - apt: deb=/tmp/{{stunnel_ldeb}}
+      when: ansible_machine == 'x86_64'
+    - command: mkdir -p /etc/stunnel/certs
+    - command: chown -R root:root /etc/stunnel/certs
+    - file: path=/var/log/stunnel state=directory owner=nobody group=staff mode=0750
+    - file: path=/var/run/stunnel state=directory owner=nobody group=staff mode=0755
+    - file: path=/var/lib/stunnel state=directory owner=nobody group=staff mode=0755
+    - lineinfile: dest=/etc/rc.local insertafter="^done" line="/usr/bin/stunnel /etc/stunnel/stunnel.conf"
+    - template: src=stunnel-nlb.conf dest=/etc/stunnel/stunnel.conf
+
